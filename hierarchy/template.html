@@ -9,14 +9,24 @@ const data = {DATA}
 
 const vshader = `
 attribute vec2 xy;
+attribute float cluster;
+uniform float highlight_min;
+uniform float highlight_max;
+varying vec3 color;
 void main() {
     gl_Position = vec4(xy * 0.3, 0.0, 1.0);
     gl_PointSize = 1.0;
+    if (cluster >= highlight_min && cluster <= highlight_max) {
+        color = vec3(1.0, 0.0, 0.0);
+    } else {
+        color = vec3(0.0, 0.0, 0.0);
+    }
 }
 `;
 const fshader = `
+varying lowp vec3 color;
 void main() {
-    gl_FragColor = vec4(0.0, 0.0, 0.0, 1.0);
+    gl_FragColor = vec4(color, 1.0);
 }
 `;
 
@@ -48,19 +58,44 @@ function init_webgl(gl) {
 	}
 
 	stuff.program_xy = gl.getAttribLocation(stuff.program, 'xy');
+	stuff.program_cluster = gl.getAttribLocation(stuff.program, 'cluster');
+	stuff.program_highlight_min = gl.getUniformLocation(stuff.program, 'highlight_min');
+	stuff.program_highlight_max = gl.getUniformLocation(stuff.program, 'highlight_max');
 
 	return stuff;
 }
 
-function setup_vbuffers(gl, stuff) {
+function setup_vbuffers(gl, stuff, node_index) {
+	if (stuff.vbuffer !== undefined) {
+		gl.deleteBuffer(stuff.vbuffer);
+		gl.deleteBuffer(stuff.cbuffer);
+	}
+
+	const node = data.nodes[node_index];
+	stuff.n = node.x.length;
+	const vdata = new Float32Array(stuff.n * 2);
+	for (let i = 0; i < stuff.n; i++) {
+		vdata[2*i] = node.x[i];
+		vdata[2*i+1] = node.y[i];
+	}
 	stuff.vbuffer = gl.createBuffer();
 	gl.bindBuffer(gl.ARRAY_BUFFER, stuff.vbuffer);
-	const vdata = new Float32Array(data.nodes[0].x.length * 2);
-	for (let i = 0; i < data.nodes[0].x.length; i++) {
-		vdata[2*i] = data.nodes[0].x[i];
-		vdata[2*i+1] = data.nodes[0].y[i];
-	}
 	gl.bufferData(gl.ARRAY_BUFFER, vdata, gl.STATIC_DRAW);
+
+	const cdata = new Int16Array(stuff.n);
+	let j = 0;
+	for (let i = 0; i < data.cluster_labels.length; i++) {
+		if (data.cluster_labels[i] >= node.min_label && data.cluster_labels[i] <= node.max_label) {
+			cdata[j] = data.cluster_labels[i];
+			j++;
+		}
+	}
+	if (j !== stuff.n) {
+		throw 'unexpected final index';
+	}
+	stuff.cbuffer = gl.createBuffer();
+	gl.bindBuffer(gl.ARRAY_BUFFER, stuff.cbuffer);
+	gl.bufferData(gl.ARRAY_BUFFER, cdata, gl.STATIC_DRAW);
 }
 
 function draw(gl, stuff) {
@@ -72,13 +107,20 @@ function draw(gl, stuff) {
 	gl.enableVertexAttribArray(stuff.program_xy);
 	gl.vertexAttribPointer(stuff.program_xy, 2, gl.FLOAT, false, 8, 0);
 
-	gl.drawArrays(gl.POINTS, 0, data.nodes[0].x.length);
+	gl.bindBuffer(gl.ARRAY_BUFFER, stuff.cbuffer);
+	gl.enableVertexAttribArray(stuff.program_cluster);
+	gl.vertexAttribPointer(stuff.program_cluster, 1, gl.UNSIGNED_SHORT, false, 2, 0);
+
+	gl.uniform1f(stuff.program_highlight_min, 0);
+	gl.uniform1f(stuff.program_highlight_max, 250);
+
+	gl.drawArrays(gl.POINTS, 0, stuff.n);
 }
 
 function load() {
 	const gl = document.getElementById('canvas').getContext('webgl');
 	const stuff = init_webgl(gl);
-	setup_vbuffers(gl, stuff);
+	setup_vbuffers(gl, stuff, 0);
 	draw(gl, stuff);
 }
 
