@@ -1,0 +1,93 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<script>
+"use strict";
+
+const data = {DATA}
+
+const vshader = `
+attribute vec2 xy;
+void main() {
+    gl_Position = vec4(xy * 0.3, 0.0, 1.0);
+    gl_PointSize = 1.0;
+}
+`;
+const fshader = `
+void main() {
+    gl_FragColor = vec4(0.0, 0.0, 0.0, 1.0);
+}
+`;
+
+function init_webgl(gl) {
+	const stuff = {}
+	stuff.vshader = gl.createShader(gl.VERTEX_SHADER);
+	gl.shaderSource(stuff.vshader, vshader);
+	gl.compileShader(stuff.vshader);
+	if (!gl.getShaderParameter(stuff.vshader, gl.COMPILE_STATUS)) {
+		console.log(gl.getShaderInfoLog(stuff.vshader));
+		throw 'bad vshader';
+	}
+
+	stuff.fshader = gl.createShader(gl.FRAGMENT_SHADER);
+	gl.shaderSource(stuff.fshader, fshader);
+	gl.compileShader(stuff.fshader);
+	if (!gl.getShaderParameter(stuff.fshader, gl.COMPILE_STATUS)) {
+		console.log(gl.getShaderInfoLog(stuff.fshader));
+		throw 'bad fshader';
+	}
+
+	stuff.program = gl.createProgram();
+	gl.attachShader(stuff.program, stuff.vshader);
+	gl.attachShader(stuff.program, stuff.fshader);
+	gl.linkProgram(stuff.program);
+	if (!gl.getProgramParameter(stuff.program, gl.LINK_STATUS)) {
+		console.log(gl.getProgramInfoLog(stuff.program));
+		throw 'bad program';
+	}
+
+	stuff.program_xy = gl.getAttribLocation(stuff.program, 'xy');
+
+	return stuff;
+}
+
+function setup_vbuffers(gl, stuff) {
+	stuff.vbuffer = gl.createBuffer();
+	gl.bindBuffer(gl.ARRAY_BUFFER, stuff.vbuffer);
+	const vdata = new Float32Array(data.nodes[0].x.length * 2);
+	for (let i = 0; i < data.nodes[0].x.length; i++) {
+		vdata[2*i] = data.nodes[0].x[i];
+		vdata[2*i+1] = data.nodes[0].y[i];
+	}
+	gl.bufferData(gl.ARRAY_BUFFER, vdata, gl.STATIC_DRAW);
+}
+
+function draw(gl, stuff) {
+	gl.clearColor(1, 1, 1, 1);
+	gl.clear(gl.COLOR_BUFFER_BIT);
+	gl.useProgram(stuff.program);
+
+	gl.bindBuffer(gl.ARRAY_BUFFER, stuff.vbuffer);
+	gl.enableVertexAttribArray(stuff.program_xy);
+	gl.vertexAttribPointer(stuff.program_xy, 2, gl.FLOAT, false, 8, 0);
+
+	gl.drawArrays(gl.POINTS, 0, data.nodes[0].x.length);
+}
+
+function load() {
+	const gl = document.getElementById('canvas').getContext('webgl');
+	const stuff = init_webgl(gl);
+	setup_vbuffers(gl, stuff);
+	draw(gl, stuff);
+}
+
+window.onload = load;
+
+</script>
+</head>
+<body>
+<canvas id="canvas" width="1000" height="800">
+</canvas>
+</body>
+</html>
