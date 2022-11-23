@@ -42,6 +42,8 @@ void main() {
 }
 `;
 
+let gl_state = undefined;
+
 function init_webgl(gl, width, height) {
 	const stuff = {}
 	stuff.vshader = gl.createShader(gl.VERTEX_SHADER);
@@ -102,10 +104,14 @@ function init_webgl(gl, width, height) {
 	gl.framebufferRenderbuffer(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.RENDERBUFFER, stuff.renderbuffer);
 	gl.bindFramebuffer(gl.FRAMEBUFFER, null);
 
+	stuff.node_index = 0;
+	stuff.highlight = 'none';
+
 	return stuff;
 }
 
-function setup_vbuffers(gl, stuff, node_index) {
+function setup_vbuffers(gl, stuff) {
+	const node_index = stuff.node_index;
 	if (stuff.vbuffer !== undefined) {
 		gl.deleteBuffer(stuff.vbuffer);
 		gl.deleteBuffer(stuff.cbuffer);
@@ -129,9 +135,9 @@ function setup_vbuffers(gl, stuff, node_index) {
 		if (data.cluster_labels[i] >= node.min_label && data.cluster_labels[i] <= node.max_label) {
 			cdata[j] = data.cluster_labels[i];
 
-			rgbdata[3*j] = (i & 31) / 31;
+			rgbdata[3*j+2] = (i & 31) / 31;
 			rgbdata[3*j+1] = ((i >> 5) & 63) / 63;
-			rgbdata[3*j+2] = ((i >> 11) & 31) / 31;
+			rgbdata[3*j] = ((i >> 11) & 31) / 31;
 
 			j++;
 		}
@@ -147,17 +153,30 @@ function setup_vbuffers(gl, stuff, node_index) {
 	gl.bindBuffer(gl.ARRAY_BUFFER, stuff.rgbbuffer);
 	gl.bufferData(gl.ARRAY_BUFFER, rgbdata, gl.STATIC_DRAW);
 
-	if (node.left !== undefined) {
-		stuff.hmin = data.nodes[node.left].min_label;
-		stuff.hmax = data.nodes[node.left].max_label;
+	if (node.right !== undefined) {
+		stuff.mid = data.nodes[node.right].min_label;
 	} else {
-		stuff.hmin = 65535;
-		stuff.hmax = 65535;
+		stuff.mid = undefined;
 	}
 }
 
 function draw(gl, stuff) {
-	gl.clearColor(1, 1, 1, 1);
+	draw_onscreen(gl, stuff);
+	draw_offscreen(gl, stuff);
+}
+
+function draw_onscreen(gl, stuff) {
+	let hmin = 65535;
+	let hmax = 65535;
+	const node = data.nodes[stuff.node_index];
+	if (stuff.highlight === 'left' && node.left !== null) {
+		hmin = data.nodes[node.left].min_label;
+		hmax = data.nodes[node.left].max_label;
+	} else if (stuff.highlight === 'right' && node.right !== null) {
+		hmin = data.nodes[node.right].min_label;
+		hmax = data.nodes[node.right].max_label;
+	}
+	gl.clearColor(0.9, 0.9, 0.9, 1);
 	gl.clear(gl.COLOR_BUFFER_BIT);
 	gl.useProgram(stuff.program);
 
@@ -169,14 +188,16 @@ function draw(gl, stuff) {
 	gl.enableVertexAttribArray(stuff.program_cluster);
 	gl.vertexAttribPointer(stuff.program_cluster, 1, gl.UNSIGNED_SHORT, false, 2, 0);
 
-	gl.uniform1f(stuff.program_highlight_min, stuff.hmin);
-	gl.uniform1f(stuff.program_highlight_max, stuff.hmax);
+	gl.uniform1f(stuff.program_highlight_min, hmin);
+	gl.uniform1f(stuff.program_highlight_max, hmax);
 
 	gl.drawArrays(gl.POINTS, 0, stuff.n);
+}
 
-	// Offscreen
-
+function draw_offscreen(gl, stuff) {
 	gl.bindFramebuffer(gl.FRAMEBUFFER, stuff.framebuffer);
+	gl.clearColor(1, 1, 1, 1);
+	gl.clear(gl.COLOR_BUFFER_BIT);
 
 	gl.useProgram(stuff.program_o);
 
@@ -193,20 +214,105 @@ function draw(gl, stuff) {
 	gl.bindFramebuffer(gl.FRAMEBUFFER, null);
 }
 
+function getpixel(gl, stuff, x, y) {
+	gl.bindFramebuffer(gl.FRAMEBUFFER, stuff.framebuffer);
+	const result = new Uint16Array(1);
+	gl.readPixels(x, y, 1, 1, gl.RGB, gl.UNSIGNED_SHORT_5_6_5, result);
+	gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+	return result[0];
+}
+
 function load() {
 	const canvas = document.getElementById('canvas')
 	const gl = canvas.getContext('webgl');
-	const stuff = init_webgl(gl, canvas.width, canvas.height);
-	setup_vbuffers(gl, stuff, 0);
-	draw(gl, stuff);
+	gl_state = init_webgl(gl, canvas.width, canvas.height);
+	setup_vbuffers(gl, gl_state);
+	draw(gl, gl_state);
+}
+
+function mousemove(e) {
+	const canvas = document.getElementById('canvas')
+	const stuff = gl_state;
+	const x = e.offsetX;
+	const y = canvas.height - 1 - e.offsetY;
+	const gl = canvas.getContext('webgl');
+	const pix = getpixel(gl, gl_state, x, y);
+	let highlight = undefined;
+	if (pix < 65535) {
+		document.getElementById('tok').textContent = `'${data.tokens[pix]}'`;
+		const cluster = data.cluster_labels[pix];
+		if (stuff.mid !== undefined) {
+			if (cluster < stuff.mid) {
+				highlight = 'left';
+			} else {
+				highlight = 'right';
+			}
+		}
+	}
+	if (highlight !== undefined && highlight !== stuff.highlight) {
+		stuff.highlight = highlight;
+		draw_onscreen(gl, stuff);
+	}
+}
+
+function mousedown(e) {
+	const stuff = gl_state;
+	const node = data.nodes[stuff.node_index];
+	if (stuff.highlight === 'left' && node.left !== null) {
+		stuff.node_index = node.left;
+		stuff.highlight = 'none';
+		const gl = document.getElementById('canvas').getContext('webgl');
+		setup_vbuffers(gl, stuff);
+		draw(gl, stuff);
+	} else if (stuff.highlight === 'right' && node.right !== null) {
+		stuff.node_index = node.right;
+		stuff.highlight = 'none';
+		const gl = document.getElementById('canvas').getContext('webgl');
+		setup_vbuffers(gl, stuff);
+		draw(gl, stuff);
+	} else if (stuff.highlight === 'none') {
+		go_up();
+		return;
+	}
+}
+
+function mouseout(event) {
+	const stuff = gl_state;
+	if (stuff.highlight !== 'none') {
+		stuff.highlight = 'none';
+		const gl = document.getElementById('canvas').getContext('webgl');
+		draw_onscreen(gl, stuff);
+	}
+}
+
+function go_up() {
+	const stuff = gl_state;
+	for (let node_index = 0; node_index < data.nodes.length; node_index++) {
+		if (data.nodes[node_index].left === stuff.node_index || data.nodes[node_index].right === stuff.node_index) {
+			stuff.node_index = node_index;
+			stuff.highlight = 'none';
+			const gl = document.getElementById('canvas').getContext('webgl');
+			setup_vbuffers(gl, stuff);
+			draw(gl, stuff);
+			return;
+		}
+	}
+}
+
+function keydown(e) {
+	if (e.key === 'Escape') {
+		go_up();
+	}
 }
 
 window.onload = load;
 
 </script>
 </head>
-<body>
-<canvas id="canvas" width="1000" height="800">
+<body onkeydown="keydown(event)">
+<canvas id="canvas" width="1000" height="800" onmousemove="mousemove(event)" onmousedown="mousedown(event)" onmouseout="mouseout(event)">
 </canvas>
+<br>
+<span id="tok">&nbsp;</span>
 </body>
 </html>
