@@ -8,13 +8,14 @@
 const data = {DATA}
 
 const vshader = `
-attribute vec2 xy;
+attribute vec3 xy;
 attribute float cluster;
 uniform float highlight_min;
 uniform float highlight_max;
+uniform mat3 rot;
 varying vec3 color;
 void main() {
-    gl_Position = vec4(xy * 0.3, 0.0, 1.0);
+    gl_Position = vec4(rot * xy, 1.0);
     gl_PointSize = 1.0;
     if (cluster >= highlight_min && cluster <= highlight_max) {
         color = vec3(1.0, 0.0, 0.0);
@@ -25,11 +26,12 @@ void main() {
 `;
 
 const vshader_o = `
-attribute vec2 xy;
+attribute vec3 xy;
 attribute vec3 rgb;
+uniform mat3 rot;
 varying vec3 color;
 void main() {
-    gl_Position = vec4(xy * 0.3, 0.0, 1.0);
+    gl_Position = vec4(rot * xy, 1.0);
     gl_PointSize = 1.0;
     color = rgb;
 }
@@ -43,6 +45,60 @@ void main() {
 `;
 
 let gl_state = undefined;
+
+class Rotation {
+	constructor(r, i, j, k) {
+		this.r = r;
+		this.i = i;
+		this.j = j;
+		this.k = k;
+	}
+
+	mul(other) {
+		return new Rotation(
+			this.r * other.r - this.i * other.i - this.j * other.j - this.k * other.k,
+			this.r * other.i + this.i * other.r + this.j * other.k - this.k * other.j,
+			this.r * other.j + this.j * other.r + this.k * other.i - this.i * other.k,
+			this.r * other.k + this.k * other.r + this.i * other.j - this.j * other.i,
+		);
+	}
+
+	matrix(scale) {
+		const r = this.r;
+		const i = this.i;
+		const j = this.j;
+		const k = this.k;
+		const result = [
+			1 - 2 * (j*j + k*k), 2 * (i*j - k*r), 2 * (i*k + j*r),
+			2*(i*j + k*r), 1 - 2 * (i*i + k*k), 2*(j*k - i*r),
+			2*(i*k - j*r), 2 * (j*k + i*r), 1 - 2 * (i*i + j*j),
+		];
+		for (let i = 0; i < 9; i++) {
+			result[i] *= scale;
+		}
+		return result;
+	}
+
+	static identity() {
+		return new Rotation(1, 0, 0, 0);
+	}
+
+	static xy(x, y) {
+		if (x === 0 && y === 0) {
+			return Rotation.identity();
+		}
+		const d = Math.sqrt(x * x + y * y);
+		const c = Math.cos(d);
+		const s = Math.sin(d);
+		x /= d;
+		y /= d;
+		return new Rotation(c, y * s, x * s, 0);
+	}
+
+	static z(theta) {
+		return new Rotation(Math.cos(theta), 0, 0, Math.sin(theta));
+	}
+}
 
 function init_webgl(gl, width, height) {
 	const stuff = {}
@@ -92,9 +148,11 @@ function init_webgl(gl, width, height) {
 	stuff.program_cluster = gl.getAttribLocation(stuff.program, 'cluster');
 	stuff.program_highlight_min = gl.getUniformLocation(stuff.program, 'highlight_min');
 	stuff.program_highlight_max = gl.getUniformLocation(stuff.program, 'highlight_max');
+	stuff.program_rot = gl.getUniformLocation(stuff.program, 'rot');
 
 	stuff.program_o_xy = gl.getAttribLocation(stuff.program_o, 'xy');
 	stuff.program_o_rgb = gl.getAttribLocation(stuff.program_o, 'rgb');
+	stuff.program_o_rot = gl.getUniformLocation(stuff.program_o, 'rot');
 
 	stuff.renderbuffer = gl.createRenderbuffer();
 	gl.bindRenderbuffer(gl.RENDERBUFFER, stuff.renderbuffer);
@@ -106,6 +164,9 @@ function init_webgl(gl, width, height) {
 
 	stuff.node_index = 0;
 	stuff.highlight = 'none';
+	stuff.rot = Rotation.identity();
+	stuff.lastx = undefined;
+	stuff.lasty = undefined;
 
 	return stuff;
 }
@@ -119,10 +180,11 @@ function setup_vbuffers(gl, stuff) {
 
 	const node = data.nodes[node_index];
 	stuff.n = node.x.length;
-	const vdata = new Float32Array(stuff.n * 2);
+	const vdata = new Float32Array(stuff.n * 3);
 	for (let i = 0; i < stuff.n; i++) {
-		vdata[2*i] = node.x[i];
-		vdata[2*i+1] = node.y[i];
+		vdata[3*i] = node.x[i];
+		vdata[3*i+1] = node.y[i];
+		vdata[3*i+2] = node.z[i];
 	}
 	stuff.vbuffer = gl.createBuffer();
 	gl.bindBuffer(gl.ARRAY_BUFFER, stuff.vbuffer);
@@ -182,7 +244,7 @@ function draw_onscreen(gl, stuff) {
 
 	gl.bindBuffer(gl.ARRAY_BUFFER, stuff.vbuffer);
 	gl.enableVertexAttribArray(stuff.program_xy);
-	gl.vertexAttribPointer(stuff.program_xy, 2, gl.FLOAT, false, 8, 0);
+	gl.vertexAttribPointer(stuff.program_xy, 3, gl.FLOAT, false, 12, 0);
 
 	gl.bindBuffer(gl.ARRAY_BUFFER, stuff.cbuffer);
 	gl.enableVertexAttribArray(stuff.program_cluster);
@@ -190,6 +252,7 @@ function draw_onscreen(gl, stuff) {
 
 	gl.uniform1f(stuff.program_highlight_min, hmin);
 	gl.uniform1f(stuff.program_highlight_max, hmax);
+	gl.uniformMatrix3fv(stuff.program_rot, false, stuff.rot.matrix(0.3));
 
 	gl.drawArrays(gl.POINTS, 0, stuff.n);
 }
@@ -200,10 +263,11 @@ function draw_offscreen(gl, stuff) {
 	gl.clear(gl.COLOR_BUFFER_BIT);
 
 	gl.useProgram(stuff.program_o);
+	gl.uniformMatrix3fv(stuff.program_o_rot, false, stuff.rot.matrix(0.3));
 
 	gl.bindBuffer(gl.ARRAY_BUFFER, stuff.vbuffer);
 	gl.enableVertexAttribArray(stuff.program_o_xy);
-	gl.vertexAttribPointer(stuff.program_o_xy, 2, gl.FLOAT, false, 8, 0);
+	gl.vertexAttribPointer(stuff.program_o_xy, 3, gl.FLOAT, false, 12, 0);
 
 	gl.bindBuffer(gl.ARRAY_BUFFER, stuff.rgbbuffer);
 	gl.enableVertexAttribArray(stuff.program_o_rgb);
@@ -233,26 +297,41 @@ function load() {
 function mousemove(e) {
 	const canvas = document.getElementById('canvas')
 	const stuff = gl_state;
+	const gl = canvas.getContext('webgl');
 	const x = e.offsetX;
 	const y = canvas.height - 1 - e.offsetY;
-	const gl = canvas.getContext('webgl');
-	const pix = getpixel(gl, gl_state, x, y);
-	let highlight = undefined;
-	if (pix < 65535) {
-		document.getElementById('tok').textContent = `'${data.tokens[pix]}'`;
-		const cluster = data.cluster_labels[pix];
-		if (stuff.mid !== undefined) {
-			if (cluster < stuff.mid) {
-				highlight = 'left';
-			} else {
-				highlight = 'right';
+
+	if (e.ctrlKey && stuff.lastx !== undefined) {
+		const dx = x - stuff.lastx;
+		const dy = y - stuff.lasty;
+		stuff.rot = stuff.rot.mul(Rotation.z(dx / 200));
+		draw(gl, stuff);
+	} else if (e.shiftKey && stuff.lastx !== undefined) {
+		const dx = x - stuff.lastx;
+		const dy = y - stuff.lasty;
+		stuff.rot = stuff.rot.mul(Rotation.xy(dx / 200, -dy / 200));
+		draw(gl, stuff);
+	} else {
+		const pix = getpixel(gl, gl_state, x, y);
+		let highlight = undefined;
+		if (pix < 65535) {
+			document.getElementById('tok').textContent = `'${data.tokens[pix]}'`;
+			const cluster = data.cluster_labels[pix];
+			if (stuff.mid !== undefined) {
+				if (cluster < stuff.mid) {
+					highlight = 'left';
+				} else {
+					highlight = 'right';
+				}
 			}
 		}
+		if (highlight !== undefined && highlight !== stuff.highlight) {
+			stuff.highlight = highlight;
+			draw_onscreen(gl, stuff);
+		}
 	}
-	if (highlight !== undefined && highlight !== stuff.highlight) {
-		stuff.highlight = highlight;
-		draw_onscreen(gl, stuff);
-	}
+	stuff.lastx = x;
+	stuff.lasty = y;
 }
 
 function mousedown(e) {
@@ -261,13 +340,17 @@ function mousedown(e) {
 	if (stuff.highlight === 'left' && node.left !== null) {
 		stuff.node_index = node.left;
 		stuff.highlight = 'none';
+		stuff.rot = Rotation.identity();
 		const gl = document.getElementById('canvas').getContext('webgl');
+		document.getElementById('depth').textContent = `Depth=${data.nodes[stuff.node_index].depth}`;
 		setup_vbuffers(gl, stuff);
 		draw(gl, stuff);
 	} else if (stuff.highlight === 'right' && node.right !== null) {
 		stuff.node_index = node.right;
 		stuff.highlight = 'none';
+		stuff.rot = Rotation.identity();
 		const gl = document.getElementById('canvas').getContext('webgl');
+		document.getElementById('depth').textContent = `Depth=${data.nodes[stuff.node_index].depth}`;
 		setup_vbuffers(gl, stuff);
 		draw(gl, stuff);
 	} else if (stuff.highlight === 'none') {
@@ -291,7 +374,9 @@ function go_up() {
 		if (data.nodes[node_index].left === stuff.node_index || data.nodes[node_index].right === stuff.node_index) {
 			stuff.node_index = node_index;
 			stuff.highlight = 'none';
+			stuff.rot = Rotation.identity();
 			const gl = document.getElementById('canvas').getContext('webgl');
+			document.getElementById('depth').textContent = `Depth=${data.nodes[stuff.node_index].depth}`;
 			setup_vbuffers(gl, stuff);
 			draw(gl, stuff);
 			return;
@@ -310,9 +395,9 @@ window.onload = load;
 </script>
 </head>
 <body onkeydown="keydown(event)">
-<canvas id="canvas" width="1000" height="800" onmousemove="mousemove(event)" onmousedown="mousedown(event)" onmouseout="mouseout(event)">
+<canvas id="canvas" width="900" height="900" onmousemove="mousemove(event)" onmousedown="mousedown(event)" onmouseout="mouseout(event)">
 </canvas>
 <br>
-<span id="tok">&nbsp;</span>
+<span id="depth">Depth=0</span> <span id="tok">&nbsp;</span>
 </body>
 </html>
