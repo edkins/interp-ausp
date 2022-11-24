@@ -1,0 +1,353 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<script>
+"use strict";
+
+let file_stuff = undefined;
+const gl_stuff = {}
+
+const vshader = `
+attribute vec2 xy;
+attribute float z;
+uniform vec2 slant;
+varying vec3 color;
+void main() {
+    gl_Position = vec4(xy + slant * z, 0.0, 1.0);
+    gl_PointSize = 1.0;
+    color = vec3(0.0, 0.0, 0.0);
+}
+`;
+
+const vshader_o = `
+attribute vec2 xy;
+attribute float z;
+attribute vec3 rgb;
+uniform vec2 slant;
+varying vec3 color;
+void main() {
+    gl_Position = vec4(xy + slant * z, 0.0, 1.0);
+    gl_PointSize = 1.0;
+    color = rgb;
+}
+`;
+
+const fshader = `
+varying lowp vec3 color;
+void main() {
+    gl_FragColor = vec4(color, 1.0);
+}
+`;
+
+function init_webgl() {
+	const canvas = document.getElementById('canvas');
+	const width = canvas.width;
+	const height = canvas.height;
+	const gl = canvas.getContext('webgl');
+
+	const stuff = gl_stuff;
+
+	stuff.vshader = gl.createShader(gl.VERTEX_SHADER);
+	gl.shaderSource(stuff.vshader, vshader);
+	gl.compileShader(stuff.vshader);
+	if (!gl.getShaderParameter(stuff.vshader, gl.COMPILE_STATUS)) {
+		console.log(gl.getShaderInfoLog(stuff.vshader));
+		throw 'bad vshader';
+	}
+
+	stuff.vshader_o = gl.createShader(gl.VERTEX_SHADER);
+	gl.shaderSource(stuff.vshader_o, vshader_o);
+	gl.compileShader(stuff.vshader_o);
+	if (!gl.getShaderParameter(stuff.vshader_o, gl.COMPILE_STATUS)) {
+		console.log(gl.getShaderInfoLog(stuff.vshader_o));
+		throw 'bad vshader';
+	}
+
+	stuff.fshader = gl.createShader(gl.FRAGMENT_SHADER);
+	gl.shaderSource(stuff.fshader, fshader);
+	gl.compileShader(stuff.fshader);
+	if (!gl.getShaderParameter(stuff.fshader, gl.COMPILE_STATUS)) {
+		console.log(gl.getShaderInfoLog(stuff.fshader));
+		throw 'bad fshader';
+	}
+
+	stuff.program = gl.createProgram();
+	gl.attachShader(stuff.program, stuff.vshader);
+	gl.attachShader(stuff.program, stuff.fshader);
+	gl.linkProgram(stuff.program);
+	if (!gl.getProgramParameter(stuff.program, gl.LINK_STATUS)) {
+		console.log(gl.getProgramInfoLog(stuff.program));
+		throw 'bad program';
+	}
+
+	stuff.program_o = gl.createProgram();
+	gl.attachShader(stuff.program_o, stuff.vshader_o);
+	gl.attachShader(stuff.program_o, stuff.fshader);
+	gl.linkProgram(stuff.program_o);
+	if (!gl.getProgramParameter(stuff.program_o, gl.LINK_STATUS)) {
+		console.log(gl.getProgramInfoLog(stuff.program_o));
+		throw 'bad program';
+	}
+
+	stuff.program_xy = gl.getAttribLocation(stuff.program, 'xy');
+	stuff.program_z = gl.getAttribLocation(stuff.program, 'z');
+	stuff.program_slant = gl.getUniformLocation(stuff.program, 'slant');
+
+	stuff.program_o_xy = gl.getAttribLocation(stuff.program_o, 'xy');
+	stuff.program_o_z = gl.getAttribLocation(stuff.program_o, 'z');
+	stuff.program_o_slant = gl.getUniformLocation(stuff.program_o, 'slant');
+	stuff.program_o_rgb = gl.getAttribLocation(stuff.program_o, 'rgb');
+
+	stuff.renderbuffer = gl.createRenderbuffer();
+	gl.bindRenderbuffer(gl.RENDERBUFFER, stuff.renderbuffer);
+	gl.renderbufferStorage(gl.RENDERBUFFER, gl.RGB565, width, height);
+	stuff.framebuffer = gl.createFramebuffer();
+	gl.bindFramebuffer(gl.FRAMEBUFFER, stuff.framebuffer);
+	gl.framebufferRenderbuffer(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.RENDERBUFFER, stuff.renderbuffer);
+	gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+
+	stuff.slantx = 0;
+	stuff.slanty = 0;
+
+	return stuff;
+}
+
+function multiply_vec(v) {
+	const inp = file_stuff.mat_bytes;
+	const out = inp + 4 * file_stuff.d_model;
+	const view = new Float32Array(file_stuff.mem.buffer, inp, file_stuff.d_model);
+	view.set(v);
+	file_stuff.multiply.exports.multiply(
+		file_stuff.d_vocab,
+		file_stuff.d_model,
+		0,
+		inp,
+		out);
+	return new Float32Array(file_stuff.mem.buffer, out, file_stuff.d_vocab).slice();
+}
+
+function setup_initial_projection() {
+	const gl = document.getElementById('canvas').getContext('webgl');
+	const xs = multiply_vec(new Float32Array(file_stuff.pca[0]));
+	const ys = multiply_vec(new Float32Array(file_stuff.pca[1]));
+	const vdata = new Float32Array(2 * file_stuff.d_vocab);
+	for (let i = 0; i < file_stuff.d_vocab; i++) {
+		vdata[2*i] = 0.3 * xs[i];
+		vdata[2*i+1] = 0.3 * ys[i];
+	}
+	gl_stuff.vbuffer = gl.createBuffer();
+	gl.bindBuffer(gl.ARRAY_BUFFER, gl_stuff.vbuffer);
+	gl.bufferData(gl.ARRAY_BUFFER, vdata, gl.STATIC_DRAW);
+
+	const zdata = new Float32Array(file_stuff.d_vocab);
+	gl_stuff.zbuffer = gl.createBuffer();
+	gl.bindBuffer(gl.ARRAY_BUFFER, gl_stuff.zbuffer);
+	gl.bufferData(gl.ARRAY_BUFFER, zdata, gl.STATIC_DRAW);
+}
+
+function draw_onscreen() {
+	const gl = document.getElementById('canvas').getContext('webgl');
+	gl.clearColor(0.9, 0.9, 0.9, 1);
+	gl.clear(gl.COLOR_BUFFER_BIT);
+	gl.useProgram(gl_stuff.program);
+
+	gl.bindBuffer(gl.ARRAY_BUFFER, gl_stuff.vbuffer);
+	gl.enableVertexAttribArray(gl_stuff.program_xy);
+	gl.vertexAttribPointer(gl_stuff.program_xy, 2, gl.FLOAT, false, 8, 0);
+
+	gl.bindBuffer(gl.ARRAY_BUFFER, gl_stuff.zbuffer);
+	gl.enableVertexAttribArray(gl_stuff.program_z);
+	gl.vertexAttribPointer(gl_stuff.program_z, 1, gl.FLOAT, false, 4, 0);
+
+	gl.uniform2f(gl_stuff.program_slant, gl_stuff.slantx, gl_stuff.slanty);
+
+	gl.drawArrays(gl.POINTS, 0, file_stuff.d_vocab);
+}
+
+function draw_offscreen(gl, stuff) {
+	gl.bindFramebuffer(gl.FRAMEBUFFER, stuff.framebuffer);
+	gl.clearColor(1, 1, 1, 1);
+	gl.clear(gl.COLOR_BUFFER_BIT);
+
+	gl.useProgram(stuff.program_o);
+	gl.uniformMatrix3fv(stuff.program_o_rot, false, stuff.rot.matrix(0.3));
+
+	gl.bindBuffer(gl.ARRAY_BUFFER, stuff.vbuffer);
+	gl.enableVertexAttribArray(stuff.program_o_xy);
+	gl.vertexAttribPointer(stuff.program_o_xy, 3, gl.FLOAT, false, 12, 0);
+
+	gl.bindBuffer(gl.ARRAY_BUFFER, stuff.rgbbuffer);
+	gl.enableVertexAttribArray(stuff.program_o_rgb);
+	gl.vertexAttribPointer(stuff.program_o_rgb, 3, gl.FLOAT, false, 12, 0);
+
+	gl.drawArrays(gl.POINTS, 0, stuff.n);
+
+	gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+}
+
+function getpixel(gl, stuff, x, y) {
+	gl.bindFramebuffer(gl.FRAMEBUFFER, stuff.framebuffer);
+	const result = new Uint16Array(1);
+	gl.readPixels(x, y, 1, 1, gl.RGB, gl.UNSIGNED_SHORT_5_6_5, result);
+	gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+	return result[0];
+}
+
+function load() {
+	const canvas = document.getElementById('canvas')
+	const gl = canvas.getContext('webgl');
+	gl_state = init_webgl(gl, canvas.width, canvas.height);
+	setup_vbuffers(gl, gl_state);
+	draw(gl, gl_state);
+}
+
+function mousemove(e) {
+	const canvas = document.getElementById('canvas')
+	const stuff = gl_state;
+	const gl = canvas.getContext('webgl');
+	const x = e.offsetX;
+	const y = canvas.height - 1 - e.offsetY;
+
+	if (e.ctrlKey && stuff.lastx !== undefined) {
+		const dx = x - stuff.lastx;
+		const dy = y - stuff.lasty;
+		stuff.rot = stuff.rot.mul(Rotation.z(dx / 200));
+		draw(gl, stuff);
+	} else if (e.shiftKey && stuff.lastx !== undefined) {
+		const dx = x - stuff.lastx;
+		const dy = y - stuff.lasty;
+		stuff.rot = stuff.rot.mul(Rotation.xy(dx / 200, -dy / 200));
+		draw(gl, stuff);
+	} else {
+		const pix = getpixel(gl, gl_state, x, y);
+		let highlight = undefined;
+		if (pix < 65535) {
+			document.getElementById('tok').textContent = `'${data.tokens[pix]}'`;
+			const cluster = data.cluster_labels[pix];
+			if (stuff.mid !== undefined) {
+				if (cluster < stuff.mid) {
+					highlight = 'left';
+				} else {
+					highlight = 'right';
+				}
+			}
+		}
+		if (highlight !== undefined && highlight !== stuff.highlight) {
+			stuff.highlight = highlight;
+			draw_onscreen(gl, stuff);
+		}
+	}
+	stuff.lastx = x;
+	stuff.lasty = y;
+}
+
+function mousedown(e) {
+	const stuff = gl_state;
+	const node = data.nodes[stuff.node_index];
+	if (stuff.highlight === 'left' && node.left !== null) {
+		stuff.node_index = node.left;
+		stuff.highlight = 'none';
+		stuff.rot = Rotation.identity();
+		const gl = document.getElementById('canvas').getContext('webgl');
+		document.getElementById('depth').textContent = `Depth=${data.nodes[stuff.node_index].depth}`;
+		setup_vbuffers(gl, stuff);
+		draw(gl, stuff);
+	} else if (stuff.highlight === 'right' && node.right !== null) {
+		stuff.node_index = node.right;
+		stuff.highlight = 'none';
+		stuff.rot = Rotation.identity();
+		const gl = document.getElementById('canvas').getContext('webgl');
+		document.getElementById('depth').textContent = `Depth=${data.nodes[stuff.node_index].depth}`;
+		setup_vbuffers(gl, stuff);
+		draw(gl, stuff);
+	} else if (stuff.highlight === 'none') {
+		go_up();
+		return;
+	}
+}
+
+function mouseout(event) {
+	const stuff = gl_state;
+	if (stuff.highlight !== 'none') {
+		stuff.highlight = 'none';
+		const gl = document.getElementById('canvas').getContext('webgl');
+		draw_onscreen(gl, stuff);
+	}
+}
+
+function go_up() {
+	const stuff = gl_state;
+	for (let node_index = 0; node_index < data.nodes.length; node_index++) {
+		if (data.nodes[node_index].left === stuff.node_index || data.nodes[node_index].right === stuff.node_index) {
+			stuff.node_index = node_index;
+			stuff.highlight = 'none';
+			stuff.rot = Rotation.identity();
+			const gl = document.getElementById('canvas').getContext('webgl');
+			document.getElementById('depth').textContent = `Depth=${data.nodes[stuff.node_index].depth}`;
+			setup_vbuffers(gl, stuff);
+			draw(gl, stuff);
+			return;
+		}
+	}
+}
+
+function keydown(e) {
+	if (e.key === 'Escape') {
+		go_up();
+	}
+}
+
+async function loadfiles() {
+	const picker = document.getElementById('picker');
+	let mem = undefined;
+	let pca = undefined;
+	let multiply = undefined;
+	let mat_bytes = undefined;
+
+	// process pca.json
+	for (const file of picker.files) {
+		if (file.name.endsWith('.json')) {
+			const text = await file.text();
+			pca = JSON.parse(text);
+			mat_bytes = pca.d_vocab * pca.d_model * 4;
+			const vec_bytes = (pca.d_vocab + pca.d_model) * 4;
+			mem = new WebAssembly.Memory({initial:Math.ceil((mat_bytes + vec_bytes) / 65536)});
+		}
+	}
+
+	// process matrix.bin
+	for (const file of picker.files) {
+		if (file.name.endsWith('.bin')) {
+			const array_buffer = await file.arrayBuffer();
+			new Uint8Array(mem.buffer).set(new Uint8Array(array_buffer));
+		}
+	}
+
+	// process multiply.wasm
+	for (const file of picker.files) {
+		if (file.name.endsWith('.wasm')) {
+			const array_buffer = await file.arrayBuffer();
+			const result = await WebAssembly.instantiate(array_buffer, {js: {mem}});
+			multiply = result.instance;
+		}
+	}
+
+	file_stuff = {pca:pca.pca, d_model:pca.d_model, d_vocab:pca.d_vocab, mem, multiply, mat_bytes};
+	init_webgl();
+	setup_initial_projection();
+	draw_onscreen();
+}
+
+//window.onload = load;
+
+</script>
+</head>
+<body onkeydown="keydown(event)">
+<input id="picker" type="file" accept=".bin,.json,.wasm" multiple="true" onchange="loadfiles()">
+<canvas id="canvas" width="900" height="900">
+</canvas>
+<br>
+<span id="tok">&nbsp;</span>
+</body>
+</html>
