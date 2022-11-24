@@ -107,6 +107,16 @@ function init_webgl() {
 	gl.framebufferRenderbuffer(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.RENDERBUFFER, stuff.renderbuffer);
 	gl.bindFramebuffer(gl.FRAMEBUFFER, null);
 
+	const rgbdata = new Float32Array(3 * file_stuff.d_vocab);
+	for (let i = 0; i < file_stuff.d_vocab; i++) {
+		rgbdata[3*i] = ((i >> 11) & 31) / 31;
+		rgbdata[3*i+1] = ((i >> 5) & 63) / 63;
+		rgbdata[3*i+2] = (i & 31) / 31;
+	}
+	stuff.rgbbuffer = gl.createBuffer();
+	gl.bindBuffer(gl.ARRAY_BUFFER, stuff.rgbbuffer);
+	gl.bufferData(gl.ARRAY_BUFFER, rgbdata, gl.STATIC_DRAW);
+
 	stuff.slantx = 0;
 	stuff.slanty = 0;
 
@@ -131,19 +141,23 @@ function setup_initial_projection() {
 	const gl = document.getElementById('canvas').getContext('webgl');
 	const xs = multiply_vec(new Float32Array(file_stuff.pca[0]));
 	const ys = multiply_vec(new Float32Array(file_stuff.pca[1]));
-	const vdata = new Float32Array(2 * file_stuff.d_vocab);
+	gl_stuff.vdata = new Float32Array(2 * file_stuff.d_vocab);
 	for (let i = 0; i < file_stuff.d_vocab; i++) {
-		vdata[2*i] = 0.3 * xs[i];
-		vdata[2*i+1] = 0.3 * ys[i];
+		gl_stuff.vdata[2*i] = 0.3 * xs[i];
+		gl_stuff.vdata[2*i+1] = 0.3 * ys[i];
 	}
-	gl_stuff.vbuffer = gl.createBuffer();
+	if (gl_stuff.vbuffer === undefined) {
+		gl_stuff.vbuffer = gl.createBuffer();
+	}
 	gl.bindBuffer(gl.ARRAY_BUFFER, gl_stuff.vbuffer);
-	gl.bufferData(gl.ARRAY_BUFFER, vdata, gl.STATIC_DRAW);
+	gl.bufferData(gl.ARRAY_BUFFER, gl_stuff.vdata, gl.STATIC_DRAW);
 
-	const zdata = new Float32Array(file_stuff.d_vocab);
-	gl_stuff.zbuffer = gl.createBuffer();
+	gl_stuff.zdata = multiply_vec(new Float32Array(file_stuff.pca[2]));
+	if (gl_stuff.zbuffer === undefined) {
+		gl_stuff.zbuffer = gl.createBuffer();
+	}
 	gl.bindBuffer(gl.ARRAY_BUFFER, gl_stuff.zbuffer);
-	gl.bufferData(gl.ARRAY_BUFFER, zdata, gl.STATIC_DRAW);
+	gl.bufferData(gl.ARRAY_BUFFER, gl_stuff.zdata, gl.STATIC_DRAW);
 }
 
 function draw_onscreen() {
@@ -165,137 +179,49 @@ function draw_onscreen() {
 	gl.drawArrays(gl.POINTS, 0, file_stuff.d_vocab);
 }
 
-function draw_offscreen(gl, stuff) {
-	gl.bindFramebuffer(gl.FRAMEBUFFER, stuff.framebuffer);
+function draw_offscreen() {
+	const gl = document.getElementById('canvas').getContext('webgl');
+	gl.bindFramebuffer(gl.FRAMEBUFFER, gl_stuff.framebuffer);
 	gl.clearColor(1, 1, 1, 1);
 	gl.clear(gl.COLOR_BUFFER_BIT);
 
-	gl.useProgram(stuff.program_o);
-	gl.uniformMatrix3fv(stuff.program_o_rot, false, stuff.rot.matrix(0.3));
+	gl.useProgram(gl_stuff.program_o);
 
-	gl.bindBuffer(gl.ARRAY_BUFFER, stuff.vbuffer);
-	gl.enableVertexAttribArray(stuff.program_o_xy);
-	gl.vertexAttribPointer(stuff.program_o_xy, 3, gl.FLOAT, false, 12, 0);
+	gl.bindBuffer(gl.ARRAY_BUFFER, gl_stuff.vbuffer);
+	gl.enableVertexAttribArray(gl_stuff.program_o_xy);
+	gl.vertexAttribPointer(gl_stuff.program_o_xy, 2, gl.FLOAT, false, 8, 0);
 
-	gl.bindBuffer(gl.ARRAY_BUFFER, stuff.rgbbuffer);
-	gl.enableVertexAttribArray(stuff.program_o_rgb);
-	gl.vertexAttribPointer(stuff.program_o_rgb, 3, gl.FLOAT, false, 12, 0);
+	gl.bindBuffer(gl.ARRAY_BUFFER, gl_stuff.zbuffer);
+	gl.enableVertexAttribArray(gl_stuff.program_o_z);
+	gl.vertexAttribPointer(gl_stuff.program_o_z, 1, gl.FLOAT, false, 4, 0);
 
-	gl.drawArrays(gl.POINTS, 0, stuff.n);
+	gl.bindBuffer(gl.ARRAY_BUFFER, gl_stuff.rgbbuffer);
+	gl.enableVertexAttribArray(gl_stuff.program_o_rgb);
+	gl.vertexAttribPointer(gl_stuff.program_o_rgb, 3, gl.FLOAT, false, 12, 0);
+
+	gl.drawArrays(gl.POINTS, 0, file_stuff.d_vocab);
 
 	gl.bindFramebuffer(gl.FRAMEBUFFER, null);
-}
-
-function getpixel(gl, stuff, x, y) {
-	gl.bindFramebuffer(gl.FRAMEBUFFER, stuff.framebuffer);
-	const result = new Uint16Array(1);
-	gl.readPixels(x, y, 1, 1, gl.RGB, gl.UNSIGNED_SHORT_5_6_5, result);
-	gl.bindFramebuffer(gl.FRAMEBUFFER, null);
-	return result[0];
-}
-
-function load() {
-	const canvas = document.getElementById('canvas')
-	const gl = canvas.getContext('webgl');
-	gl_state = init_webgl(gl, canvas.width, canvas.height);
-	setup_vbuffers(gl, gl_state);
-	draw(gl, gl_state);
 }
 
 function mousemove(e) {
 	const canvas = document.getElementById('canvas')
-	const stuff = gl_state;
-	const gl = canvas.getContext('webgl');
 	const x = e.offsetX;
 	const y = canvas.height - 1 - e.offsetY;
 
-	if (e.ctrlKey && stuff.lastx !== undefined) {
-		const dx = x - stuff.lastx;
-		const dy = y - stuff.lasty;
-		stuff.rot = stuff.rot.mul(Rotation.z(dx / 200));
-		draw(gl, stuff);
-	} else if (e.shiftKey && stuff.lastx !== undefined) {
-		const dx = x - stuff.lastx;
-		const dy = y - stuff.lasty;
-		stuff.rot = stuff.rot.mul(Rotation.xy(dx / 200, -dy / 200));
-		draw(gl, stuff);
-	} else {
-		const pix = getpixel(gl, gl_state, x, y);
-		let highlight = undefined;
-		if (pix < 65535) {
-			document.getElementById('tok').textContent = `'${data.tokens[pix]}'`;
-			const cluster = data.cluster_labels[pix];
-			if (stuff.mid !== undefined) {
-				if (cluster < stuff.mid) {
-					highlight = 'left';
-				} else {
-					highlight = 'right';
-				}
-			}
-		}
-		if (highlight !== undefined && highlight !== stuff.highlight) {
-			stuff.highlight = highlight;
-			draw_onscreen(gl, stuff);
-		}
+	if (e.buttons && gl_stuff.lastx) {
+		const dx = x - gl_stuff.lastx;
+		const dy = y - gl_stuff.lasty;
+		gl_stuff.slantx += dx / 1000;
+		gl_stuff.slanty += dy / 1000;
+		draw_onscreen();
 	}
-	stuff.lastx = x;
-	stuff.lasty = y;
+	gl_stuff.lastx = x;
+	gl_stuff.lasty = y;
 }
 
-function mousedown(e) {
-	const stuff = gl_state;
-	const node = data.nodes[stuff.node_index];
-	if (stuff.highlight === 'left' && node.left !== null) {
-		stuff.node_index = node.left;
-		stuff.highlight = 'none';
-		stuff.rot = Rotation.identity();
-		const gl = document.getElementById('canvas').getContext('webgl');
-		document.getElementById('depth').textContent = `Depth=${data.nodes[stuff.node_index].depth}`;
-		setup_vbuffers(gl, stuff);
-		draw(gl, stuff);
-	} else if (stuff.highlight === 'right' && node.right !== null) {
-		stuff.node_index = node.right;
-		stuff.highlight = 'none';
-		stuff.rot = Rotation.identity();
-		const gl = document.getElementById('canvas').getContext('webgl');
-		document.getElementById('depth').textContent = `Depth=${data.nodes[stuff.node_index].depth}`;
-		setup_vbuffers(gl, stuff);
-		draw(gl, stuff);
-	} else if (stuff.highlight === 'none') {
-		go_up();
-		return;
-	}
-}
-
-function mouseout(event) {
-	const stuff = gl_state;
-	if (stuff.highlight !== 'none') {
-		stuff.highlight = 'none';
-		const gl = document.getElementById('canvas').getContext('webgl');
-		draw_onscreen(gl, stuff);
-	}
-}
-
-function go_up() {
-	const stuff = gl_state;
-	for (let node_index = 0; node_index < data.nodes.length; node_index++) {
-		if (data.nodes[node_index].left === stuff.node_index || data.nodes[node_index].right === stuff.node_index) {
-			stuff.node_index = node_index;
-			stuff.highlight = 'none';
-			stuff.rot = Rotation.identity();
-			const gl = document.getElementById('canvas').getContext('webgl');
-			document.getElementById('depth').textContent = `Depth=${data.nodes[stuff.node_index].depth}`;
-			setup_vbuffers(gl, stuff);
-			draw(gl, stuff);
-			return;
-		}
-	}
-}
-
-function keydown(e) {
-	if (e.key === 'Escape') {
-		go_up();
-	}
+function mouseup(e) {
+	draw_offscreen();
 }
 
 async function loadfiles() {
@@ -337,17 +263,51 @@ async function loadfiles() {
 	init_webgl();
 	setup_initial_projection();
 	draw_onscreen();
+	draw_offscreen();
 }
 
-//window.onload = load;
+function choose_vec(v) {
+	const gl = document.getElementById('canvas').getContext('webgl');
+	for (let i = 0; i < file_stuff.d_vocab; i++) {
+		gl_stuff.vdata[2*i+0] += gl_stuff.slantx * gl_stuff.zdata[i];
+		gl_stuff.vdata[2*i+1] += gl_stuff.slanty * gl_stuff.zdata[i];
+	}
+	gl_stuff.slantx = 0;
+	gl_stuff.slanty = 0;
+
+	gl_stuff.zdata.set(multiply_vec(v));
+
+	gl.bindBuffer(gl.ARRAY_BUFFER, gl_stuff.vbuffer);
+	gl.bufferData(gl.ARRAY_BUFFER, gl_stuff.vdata, gl.STATIC_DRAW);
+
+	gl.bindBuffer(gl.ARRAY_BUFFER, gl_stuff.zbuffer);
+	gl.bufferData(gl.ARRAY_BUFFER, gl_stuff.zdata, gl.STATIC_DRAW);
+
+	draw_onscreen();
+	draw_offscreen();
+}
+
+function choose_pca(i) {
+	choose_vec(new Float32Array(file_stuff.pca[i]));
+}
+
+function reset() {
+	setup_initial_projection();
+	draw_onscreen();
+	draw_offscreen();
+}
 
 </script>
 </head>
-<body onkeydown="keydown(event)">
-<input id="picker" type="file" accept=".bin,.json,.wasm" multiple="true" onchange="loadfiles()">
-<canvas id="canvas" width="900" height="900">
+<body>
+<canvas id="canvas" width="900" height="900" onmousemove="mousemove(event)" onmouseup="mouseup(event)">
 </canvas>
 <br>
+<input id="picker" type="file" accept=".bin,.json,.wasm" multiple="true" onchange="loadfiles()">
+<button onclick="reset()">Reset</button>
+<button onclick="choose_pca(2)">PCA 2</button>
+<button onclick="choose_pca(3)">PCA 3</button>
+<button onclick="choose_pca(4)">PCA 4</button>
 <span id="tok">&nbsp;</span>
 </body>
 </html>
